@@ -1224,6 +1224,12 @@ class H3Connection:
                     stream.session_id = stream.frame_size
                     stream.frame_size = None
 
+                    # HTTP/3 never sends on a WebTransport stream, the application
+                    # does, so only the receiving half keeps the stream object
+                    # alive. A stream which already carried HEADERS is not one.
+                    if stream.headers_recv_state == HeadersState.INITIAL:
+                        stream.sending_ended = True
+
                     frame_data = stream.buffer[consumed:]
                     stream.buffer = b""
 

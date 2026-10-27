@@ -1,5 +1,6 @@
 from unittest import TestCase
 
+from aioquic.buffer import encode_uint_var
 from aioquic.h3.connection import H3_ALPN, ErrorCode, H3Connection
 from aioquic.h3.events import (
     DatagramReceived,
@@ -216,7 +217,45 @@ class WebTransportTest(TestCase):
             self.assertEqual(h3_transfer(quic_client, h3_server), [])
 
             # The server's sending part of the stream is left open.
-            self.assertIn(stream_id, h3_server._stream)
+            self.assertNotIn(stream_id, h3_server._stream)
+            self.assertFalse(quic_server._streams[stream_id].sender.reset_pending)
+
+    def test_bidirectional_stream_released(self):
+        """
+        Once the peer's half of a WebTransport stream has ended, HTTP/3 has
+        nothing left to do on it and must not keep its state, while the
+        application can still send (RFC 9000 section 3.2).
+        """
+        with h3_client_and_server(QUIC_CONFIGURATION_OPTIONS) as (
+            quic_client,
+            quic_server,
+        ):
+            h3_client = H3Connection(quic_client, enable_webtransport=True)
+            h3_server = H3Connection(quic_server, enable_webtransport=True)
+
+            # Create session.
+            session_id = self._make_session(h3_client, h3_server)
+            streams_before = set(h3_server._stream)
+
+            # Client opens a bidirectional stream and ends its half.
+            stream_id = h3_client.create_webtransport_stream(session_id)
+            quic_client.send_stream_data(stream_id, b"foo", end_stream=True)
+            events = h3_transfer(quic_client, h3_server)
+            self.assertEqual(
+                events,
+                [
+                    WebTransportStreamDataReceived(
+                        data=b"foo",
+                        session_id=session_id,
+                        stream_ended=True,
+                        stream_id=stream_id,
+                    )
+                ],
+            )
+            self.assertEqual(set(h3_server._stream), streams_before)
+
+            # The server's sending part of the stream is still usable.
+            quic_server.send_stream_data(stream_id, b"bar", end_stream=True)
             self.assertFalse(quic_server._streams[stream_id].sender.reset_pending)
 
     def test_bidirectional_stream_server_initiated(self):
@@ -358,6 +397,30 @@ class WebTransportTest(TestCase):
 
             # The stream is no longer tracked.
             self.assertNotIn(stream_id, h3_server._stream)
+
+    def test_connect_stream_signal_keeps_sending_half(self):
+        """
+        A WEBTRANSPORT_STREAM signal on the CONNECT stream does not end the
+        sending half of the session's stream.
+        """
+        with h3_client_and_server(QUIC_CONFIGURATION_OPTIONS) as (
+            quic_client,
+            quic_server,
+        ):
+            h3_client = H3Connection(quic_client, enable_webtransport=True)
+            h3_server = H3Connection(quic_server, enable_webtransport=True)
+
+            # Create session.
+            session_id = self._make_session(h3_client, h3_server)
+
+            # Client sends the signal value on the CONNECT stream.
+            quic_client.send_stream_data(
+                session_id, encode_uint_var(0x41) + encode_uint_var(session_id)
+            )
+            h3_transfer(quic_client, h3_server)
+
+            # The server can still end the session's stream.
+            h3_server.send_data(session_id, b"", end_stream=True)
 
     def test_datagram(self):
         with h3_client_and_server(QUIC_CONFIGURATION_OPTIONS) as (
