@@ -222,6 +222,11 @@ class QuicStreamSender:
             r = self._pending[0]
         except IndexError:
             if self._pending_eof:
+                # A FIN without data still needs room for its frame, or it is
+                # never sent nor declared lost (RFC 9000 section 13.3).
+                if max_size < 0:
+                    return None
+
                 # FIN only
                 self._pending_eof = False
                 return QuicStreamFrame(fin=True, offset=self._buffer_fin)
