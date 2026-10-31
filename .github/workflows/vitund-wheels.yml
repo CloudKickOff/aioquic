@@ -1,0 +1,62 @@
+# Vitund's build of aioquic: 1.7.0 plus fixes not yet released upstream.
+# A tag v<version> builds and tests the Linux wheels Vitund installs and
+# attaches them to a GitHub release of that tag.
+name: vitund-wheels
+
+on:
+  push:
+    tags:
+      # GitHub's filter treats "+" as a pattern character.
+      - "v*vitund*"
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+          - os: ubuntu-latest
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheels
+        env:
+          CIBW_ARCHS: ${{ matrix.arch }}
+          # glibc only, the limited API (one abi3 wheel per architecture).
+          CIBW_BUILD: "cp311-manylinux_*"
+          CIBW_ENVIRONMENT: AIOQUIC_SKIP_TESTS=ipv6,loss
+          CIBW_TEST_COMMAND: python -m unittest discover -t {project} -s {project}/tests
+        run: |
+          pip install cibuildwheel
+          cibuildwheel --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: dist/*.whl
+
+  release:
+    needs: wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist && sha256sum *.whl > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "aioquic 1.7.0 with fixes not yet released upstream, built for Vitund." \
+            *.whl SHA256SUMS
